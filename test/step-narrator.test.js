@@ -20,10 +20,15 @@ function makeEnv(opts) {
   const spoken = [], played = [], timers = [];
   let cancels = 0, pauses = 0, audioEl = null;
   const on = (bag) => (type, fn) => { (bag[type] = bag[type] || []).push(fn); };
+  const off = (bag) => (type, fn) => { bag[type] = (bag[type] || []).filter((f) => f !== fn); };
   const win = {
     setTimeout: (fn) => { timers.push(fn); },
     addEventListener: on(listeners.win),
-    document: { hidden: false, addEventListener: on(listeners.doc) },
+    document: {
+      hidden: false, readyState: 'complete', currentScript: opts.script || null,
+      addEventListener: on(listeners.doc), removeEventListener: off(listeners.doc),
+      querySelector: () => null, querySelectorAll: () => []
+    },
     localStorage: opts.storageThrows
       ? { getItem() { throw new Error('blocked'); }, setItem() { throw new Error('blocked'); } }
       : { getItem: (k) => (k in store ? store[k] : null), setItem: (k, v) => { store[k] = String(v); } }
@@ -56,19 +61,24 @@ function makeEnv(opts) {
     N: win.StepNarrator, win, store, spoken, played,
     cancels: () => cancels, pauses: () => pauses, audio: () => audioEl,
     flush() { while (timers.length) timers.shift()(); },
-    fire(where, type) { (listeners[where][type] || []).forEach((fn) => fn()); }
+    fire(where, type) { (listeners[where][type] || []).slice().forEach((fn) => fn()); },
+    count(where, type) { return (listeners[where][type] || []).length; }
   };
 }
 
 function makeButton() {
-  const attrs = {}, clicks = [];
-  return {
-    hidden: true, clicks,
+  let attrs = {}, clicks = [];
+  const b = {
+    hidden: true,
+    get clicks() { return clicks; },
     setAttribute(k, v) { attrs[k] = String(v); },
     getAttribute(k) { return k in attrs ? attrs[k] : null; },
+    hasAttribute(k) { return k in attrs; },
     addEventListener(type, fn) { if (type === 'click') clicks.push(fn); },
-    click() { clicks.forEach((fn) => fn()); }
+    removeEventListener(type, fn) { if (type === 'click') clicks = clicks.filter((f) => f !== fn); },
+    click() { clicks.slice().forEach((fn) => fn()); }
   };
+  return b;
 }
 
 const tests = [];
@@ -277,6 +287,129 @@ test('stop() empties the queue and pauses the clip', async () => {
   assert.strictEqual(e.pauses(), p + 1);
   e.audio().onended(); e.flush();
   assert.strictEqual(e.spoken.length, 0);
+});
+
+// ---- fits any site or app
+
+test('CommonJS on the server: exports a quiet stub, no window needed', () => {
+  const mod = { exports: {} };
+  vm.runInNewContext(CODE, { module: mod });
+  const N = mod.exports;
+  assert.strictEqual(N.supported, false);
+  const b = makeButton(); b.hidden = false;
+  N.bind(b); N.say('hello'); N.sayAll([{ text: 'x' }]); N.watch(); N.stop(); N.configure({ rate: 1 });
+  assert.strictEqual(b.hidden, true);
+  assert.strictEqual(N.isOn(), false);
+});
+
+test('CommonJS in the browser: the export and window.StepNarrator are the same object', () => {
+  const mod = { exports: {} };
+  const e = makeEnv();
+  vm.runInNewContext(CODE, { module: mod, window: e.win });
+  assert.strictEqual(mod.exports, e.win.StepNarrator);
+  assert.strictEqual(mod.exports.canSpeak, true);
+});
+
+test('configure sets speed, pitch and volume (kept in range)', () => {
+  const e = makeEnv();
+  e.N.configure({ rate: 1.2, pitch: 5, volume: -1 }).setOn(true);
+  e.N.say('Hello'); e.flush();
+  assert.strictEqual(e.spoken[0].rate, 1.2);
+  assert.strictEqual(e.spoken[0].pitch, 2);
+  assert.strictEqual(e.spoken[0].volume, 0);
+});
+
+test('configure regions: "en" can mean British English', () => {
+  const e = makeEnv({ voices: [voice('US', 'en-US'), voice('UK', 'en-GB')] });
+  e.N.configure({ regions: { en: 'en-GB' }, lang: 'en' }).setOn(true);
+  e.N.say('Hello'); e.flush();
+  assert.strictEqual(e.spoken[0].lang, 'en-GB');
+  assert.strictEqual(e.spoken[0].voice.name, 'UK');
+});
+
+test('configure storageKey: each app keeps its own choice', () => {
+  const e = makeEnv({ store: { 'shop.voice': '1' } });
+  assert.strictEqual(e.N.isOn(), false);
+  e.N.configure({ storageKey: 'shop.voice' });
+  assert.strictEqual(e.N.isOn(), true);
+  e.N.setOn(false);
+  assert.strictEqual(e.store['shop.voice'], '0');
+  assert.strictEqual(e.store['stepNarrator.on'], undefined);
+});
+
+test('configure remember: false saves nothing', () => {
+  const e = makeEnv();
+  e.N.configure({ remember: false });
+  e.N.setOn(true);
+  assert.deepStrictEqual(e.store, {});
+});
+
+test('configure defaultOn, and the visitor\'s saved choice still wins', () => {
+  const e = makeEnv();
+  e.N.configure({ defaultOn: true });
+  assert.strictEqual(e.N.isOn(), true);
+  const f = makeEnv({ store: { 'stepNarrator.on': '0' } });
+  f.N.configure({ defaultOn: true });
+  assert.strictEqual(f.N.isOn(), false);
+});
+
+test('configure voice: your own voice picker wins', () => {
+  const e = makeEnv({ voices: [voice('Google US English', 'en-US', false), voice('Brand Voice', 'en-US')] });
+  e.N.configure({ voice: (list) => list.find((v) => v.name === 'Brand Voice') }).setOn(true);
+  e.N.say('Hello'); e.flush();
+  assert.strictEqual(e.spoken[0].voice.name, 'Brand Voice');
+});
+
+test('settings on the <script> tag (no code)', () => {
+  const attrs = { 'data-default-on': '', 'data-rate': '1.3', 'data-storage-key': 'site.voice' };
+  const script = { getAttribute: (k) => (k in attrs ? attrs[k] : null), hasAttribute: (k) => k in attrs };
+  const e = makeEnv({ script });
+  assert.strictEqual(e.N.isOn(), true);
+  e.N.say('Hi'); e.flush();
+  assert.strictEqual(e.spoken[0].rate, 1.3);
+  e.N.setOn(false);
+  assert.strictEqual(e.store['site.voice'], '0');
+});
+
+test('per-item language: one queue can mix English and Spanish', () => {
+  const e = makeEnv();
+  e.N.setOn(true);
+  e.N.sayAll([{ text: 'Step 1', lang: 'en' }, { text: 'Paso 1', lang: 'es' }]);
+  e.flush(); e.spoken[0].onend(); e.flush();
+  assert.deepStrictEqual(e.spoken.map((u) => u.lang), ['en-US', 'es-US']);
+  e.N.say('Bonjour', { lang: 'fr-CA' }); e.flush();
+  assert.strictEqual(e.spoken[2].lang, 'fr-CA');
+});
+
+test('unbind removes the switch (for apps that remove the button)', () => {
+  const e = makeEnv();
+  const b = makeButton();
+  e.N.bind(b);
+  e.N.unbind(b);
+  assert.strictEqual(b.clicks.length, 0);
+  b.click();
+  assert.strictEqual(e.N.isOn(), false);
+});
+
+test('voice blocked until a tap (on by default): it tries again on the next tap or key, once', () => {
+  const e = makeEnv();
+  e.N.setDefault(true);
+  e.N.say('Step 1 of 3'); e.flush();
+  e.spoken[0].onerror({ error: 'not-allowed' });
+  assert.strictEqual(e.count('doc', 'click'), 1);
+  e.fire('doc', 'click'); e.flush();
+  assert.deepStrictEqual(e.spoken.map((u) => u.text), ['Step 1 of 3', 'Step 1 of 3']);
+  assert.strictEqual(e.count('doc', 'click'), 0, 'listener removed after one try');
+  assert.strictEqual(e.count('doc', 'keydown'), 0);
+});
+
+test('no retry after the visitor turns it off', () => {
+  const e = makeEnv();
+  e.N.setDefault(true);
+  e.N.say('Step 1'); e.flush();
+  e.spoken[0].onerror({ error: 'not-allowed' });
+  e.N.setOn(false);
+  assert.strictEqual(e.count('doc', 'click'), 0);
 });
 
 // ---- staying polite

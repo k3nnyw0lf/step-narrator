@@ -1,5 +1,20 @@
 # Changelog
 
+## 1.3.0 (2026-11-13)
+
+Fits any site or app.
+
+- New: no-code mode. `data-step-narrator` on the button and `data-narrate` on what to read. Each block is read when it appears and when its words change. Error messages too.
+- New: `data-narrate-audio` for clips, `data-narrate="..."` for your own sentence, and the language comes from the closest `lang` attribute.
+- New: settings on the script tag: `data-default-on`, `data-rate`, `data-storage-key`, `data-local-only`, `data-watch`.
+- New: `watch(container)` and `unwatch()` for apps that draw steps after the page loads. Buttons that appear later are picked up, and removed ones are let go.
+- New: `configure({ rate, pitch, volume, lang, regions, storageKey, remember, localOnly, defaultOn, voice })`.
+- New: `unbind(button)` for apps that remove the button.
+- New: each item can have its own language: `say(text, { lang })` and `sayAll([{ text, lang }])`.
+- New: if the browser blocks the voice until a tap (on by default, or a remembered "on"), it tries again on the visitor's first tap or key.
+- New: works as a CommonJS module for apps and bundlers, safe on the server (it does nothing there), with TypeScript types and a `package.json`.
+- New: `demo/no-code.html` and `docs/apps.md` (React, Next.js, Vue, site builders).
+
 ## 1.2.0 (2026-11-13)
 
 First public release.
